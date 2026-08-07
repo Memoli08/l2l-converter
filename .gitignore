@@ -1,0 +1,11 @@
+node_modules/
+dist-electron/
+out/
+.next/
+release/
+*.log
+.DS_Store
+test/tmp/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

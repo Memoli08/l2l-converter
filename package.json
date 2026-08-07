@@ -1,0 +1,64 @@
+{
+  "name": "l2l-converter",
+  "version": "1.0.0",
+  "description": "L2L — Local file converter. Batch-convert images, video, audio and documents. 100% local & private.",
+  "main": "dist-electron/electron/main.js",
+  "author": "L2L <l2l.converter@localhost>",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"next dev --webpack\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 node scripts/launch.js\"",
+    "build:web": "next build --webpack",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build": "npm run build:web && npm run build:electron",
+    "icon": "node scripts/gen-icon.js",
+    "start": "npm run build && node scripts/launch.js",
+    "test": "npm run build:electron && node scripts/launch.js test/run-in-electron.js",
+    "test:matrix": "npm run build:electron && node scripts/launch.js test/matrix-test.js",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "checksums": "bash scripts/release-checksums.sh"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.3",
+    "@phosphor-icons/react": "^2.1.10",
+    "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "mammoth": "^1.12.0",
+    "markdown-it": "^14.1.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.0.0",
+    "docx": "^9.5.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "next": "^16.3.0",
+    "postcss": "^8.5.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^7.0.2",
+    "wait-on": "^9.0.1"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true,
+    "electron@43.3.0": true,
+    "ffprobe-static@3.1.0": true,
+    "electron-winstaller@5.4.0": true,
+    "sharp@0.35.3": true
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

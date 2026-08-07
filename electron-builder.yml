@@ -1,0 +1,33 @@
+# electron-builder packaging config (used by `npm run dist:*`)
+# Requires: npm i -D electron-builder
+appId: com.l2l.converter
+productName: L2L Converter
+directories:
+  output: release
+files:
+  - out/**/*
+  - dist-electron/**/*
+  - assets/icon.png
+  - package.json
+# Native modules + bundled binaries must live outside the ASAR archive
+asarUnpack:
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
+  - "**/node_modules/@napi-rs/canvas/**"
+  - "**/node_modules/ffmpeg-static/**"
+  - "**/node_modules/ffprobe-static/**"
+linux:
+  target:
+    - AppImage
+    - zip
+  category: Utility
+  icon: assets/icon.png
+win:
+  target:
+    - nsis
+  icon: assets/icon.png
+mac:
+  target:
+    - dmg
+  icon: assets/icon.png
+  category: public.app-category.utilities

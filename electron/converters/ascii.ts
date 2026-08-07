@@ -1,0 +1,99 @@
+// ============================================================
+// L2L — ASCII Art converter
+// Turns any photo into monospace text-art (.txt), fully local.
+// 2× supersampling + per-character block averaging + automatic
+// contrast stretch → the best possible art with zero settings.
+// ============================================================
+
+import fs from "node:fs";
+
+import sharp from "sharp";
+
+import type { Reporter } from "./common";
+
+/** Maximum width in characters; tall images stay proportional. */
+const MAX_WIDTH = 120;
+/** Maximum height in characters (guards extreme panoramas). */
+const MAX_HEIGHT = 400;
+/** Brightness → character ramp (dark → dense glyph, bright → space). */
+const RAMP = "@%#*+=-:. ";
+const SHARP_LIMITS = { failOn: "none" as const, limitInputPixels: 80_000_000 };
+
+/**
+ * Reads the image and writes a `.txt` file where each character
+ * represents the average brightness of a block of source pixels.
+ */
+export async function convertToAscii(
+  inputPath: string,
+  outputPath: string,
+  report?: Reporter,
+): Promise<void> {
+  report?.({ percent: 10, stage: "Reading image…" });
+
+  const meta = await sharp(inputPath, SHARP_LIMITS).rotate().metadata();
+  const ow = meta.width ?? 0;
+  const oh = meta.height ?? 0;
+  if (!ow || !oh) throw new Error("Could not read image dimensions.");
+
+  // Terminal characters are roughly twice as tall as they are wide, so the
+  // art keeps the photo's proportions only if we halve the height. Clamp the
+  // height for extreme aspect ratios by shrinking the width instead.
+  let width = Math.max(1, Math.min(MAX_WIDTH, Math.round(ow / 2)));
+  let height = Math.max(1, Math.round(width * (oh / ow) * 0.5));
+  if (height > MAX_HEIGHT) {
+    width = Math.max(1, Math.round((width * MAX_HEIGHT) / height));
+    height = MAX_HEIGHT;
+  }
+
+  report?.({ percent: 25, stage: "Sampling pixels…" });
+
+  // Supersample 2× and block-average 2×2 → each character reflects 4 source
+  // pixels, which reads far smoother than nearest-neighbour sampling.
+  const sw = width * 2;
+  const sh = height * 2;
+  const { data, info } = await sharp(inputPath, SHARP_LIMITS)
+    .rotate()
+    .resize(sw, sh, { fit: "fill", kernel: "lanczos3" })
+    .grayscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  // sharp's raw output may expand to 3 channels; always honor the stride.
+  const stride = info.channels || 1;
+
+  const g = new Float32Array(width * height);
+  let min = 255;
+  let max = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let s = 0;
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          s += data[((y * 2 + dy) * sw + x * 2 + dx) * stride];
+        }
+      }
+      const v = s / 4;
+      g[y * width + x] = v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+
+  report?.({ percent: 70, stage: "Rendering characters…" });
+
+  // Contrast stretch maps the photo's own darkest/brightest pixels onto the
+  // full ramp — automatic "max quality", no settings to fiddle with.
+  const range = max - min;
+  const lines: string[] = [];
+  for (let y = 0; y < height; y++) {
+    let line = "";
+    for (let x = 0; x < width; x++) {
+      const t = range > 1 ? (g[y * width + x] - min) / range : 0.5;
+      const idx = Math.min(RAMP.length - 1, Math.floor(t * RAMP.length));
+      line += RAMP[idx];
+    }
+    lines.push(line.replace(/\s+$/, ""));
+  }
+
+  fs.writeFileSync(outputPath, lines.join("\n") + "\n");
+  report?.({ percent: 100, stage: "Done" });
+}
