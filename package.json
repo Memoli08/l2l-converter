@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "L2L — Local file converter. Batch-convert images, video, audio and documents. 100% local & private.",
   "main": "dist-electron/electron/main.js",
-  "author": "L2L <l2l.converter@localhost>",
+  "author": "Memoli08",
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -k \"next dev --webpack\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 node scripts/launch.js\"",
