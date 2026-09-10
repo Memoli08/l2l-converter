@@ -31,7 +31,7 @@
     "markdown-it": "^14.1.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
@@ -57,9 +57,10 @@
     "electron@40.10.6": true,
     "ffprobe-static@3.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "sharp@0.35.3": true
+    "sharp@0.35.4": true
   },
   "overrides": {
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "@xmldom/xmldom": "0.8.15"
   }
 }
