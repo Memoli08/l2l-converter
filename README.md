@@ -106,7 +106,7 @@ npm run dist:win      # → release/ NSIS installer (.exe)
 npm run dist:mac      # → release/ DMG (.dmg)
 ```
 
-The Linux **portable ZIP** (`release/l2l-converter-1.0.0.zip`) contains the
+The Linux **portable ZIP** (`release/l2l-converter-<version>-x86_64.zip`) contains the
 unpacked app and runs on any modern distro — no install required.
 
 ## 🖱️ Usage

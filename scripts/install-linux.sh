@@ -23,6 +23,11 @@ APP_DIRS_DIR="$HOME/.local/share/applications"
 mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$ICON_DIR" "$APP_DIRS_DIR"
 
 echo "Installing unpacked app → $INSTALL_DIR/app"
+# Verify checksum if manifest exists
+if [[ -f release/SHA256SUMS.txt ]]; then
+  echo "Verifying checksums..."
+  (cd release && sha256sum -c --ignore-missing SHA256SUMS.txt) || { echo "Checksum verification failed — aborting install." >&2; exit 1; }
+fi
 rm -rf "$INSTALL_DIR/app"
 cp -r release/linux-unpacked "$INSTALL_DIR/app"
 chmod +x "$INSTALL_DIR/app/l2l-converter"

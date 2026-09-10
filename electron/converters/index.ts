@@ -48,12 +48,15 @@ export async function convertJob(job: ConvertJob, report: Reporter): Promise<str
 
   const outputDir = assertSafeOutputDir(job.outputDir, inputPath);
 
-  const opts: DocJob = {
+  const opts: DocJob & { id: string; imageOptions?: import("../../shared/ipc").ImageOptions } = {
+    id: job.id,
     inputPath,
     target: job.target,
     quality: job.quality,
     outputDir,
     report,
+    color: job.color,
+    imageOptions: (job as unknown as { imageOptions?: import("../../shared/ipc").ImageOptions }).imageOptions,
   };
 
   let outputs: string[] = [];

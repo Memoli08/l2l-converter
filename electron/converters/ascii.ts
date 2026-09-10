@@ -3,12 +3,16 @@
 // Turns any photo into monospace text-art (.txt), fully local.
 // 2× supersampling + per-character block averaging + automatic
 // contrast stretch → the best possible art with zero settings.
+//
+// When a color hex is supplied, an HTML file is also produced
+// so the user sees the art in the chosen color.
 // ============================================================
 
 import fs from "node:fs";
 
 import sharp from "sharp";
 
+import { HEX_COLOR_RE } from "../../shared/ipc";
 import type { Reporter } from "./common";
 
 /** Maximum width in characters; tall images stay proportional. */
@@ -19,14 +23,25 @@ const MAX_HEIGHT = 400;
 const RAMP = "@%#*+=-:. ";
 const SHARP_LIMITS = { failOn: "none" as const, limitInputPixels: 80_000_000 };
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
  * Reads the image and writes a `.txt` file where each character
  * represents the average brightness of a block of source pixels.
+ * If `color` is provided, also writes an `.html` file that renders
+ * the art in the chosen foreground colour on a dark background.
  */
 export async function convertToAscii(
   inputPath: string,
   outputPath: string,
   report?: Reporter,
+  color?: string,
 ): Promise<void> {
   report?.({ percent: 10, stage: "Reading image…" });
 
@@ -94,6 +109,39 @@ export async function convertToAscii(
     lines.push(line.replace(/\s+$/, ""));
   }
 
+  // Always write the plain-text version.
   fs.writeFileSync(outputPath, lines.join("\n") + "\n");
+
+  // If a colour was requested, also write an HTML file that renders
+  // the ASCII art in the chosen foreground colour on a dark background.
+  if (color && HEX_COLOR_RE.test(color)) {
+    const htmlPath = outputPath.replace(/\.txt$/i, ".html");
+    const htmlLines = lines.map((l) => `<span>${escapeHtml(l)}</span>`).join("\n");
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ASCII Art</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: ${color};
+    font-family: 'DejaVu Sans Mono', 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.15;
+    white-space: pre;
+    padding: 24px;
+    overflow: auto;
+  }
+</style>
+</head>
+<body>
+${htmlLines}
+</body>
+</html>`;
+    fs.writeFileSync(htmlPath, html, "utf8");
+  }
+
   report?.({ percent: 100, stage: "Done" });
 }

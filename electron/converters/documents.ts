@@ -38,6 +38,7 @@ export interface DocJob {
   quality: Quality;
   outputDir: string;
   report: Reporter;
+  color?: string;
 }
 
 // ------------------------------------------------------------
@@ -135,6 +136,69 @@ async function extractPdfText(data: Uint8Array, report: Reporter): Promise<strin
 }
 
 // ------------------------------------------------------------
+// Plain text / ASCII art → PNG image (rendered via sharp + SVG)
+// Any .txt works; ASCII-art files keep their monospace layout.
+// ------------------------------------------------------------
+const TEXT_IMG_FONT_SIZE = 20;
+const TEXT_IMG_CHAR_RATIO = 0.6; // monospace advance width per em
+const TEXT_IMG_LINE_RATIO = 1.18; // line box per em
+const TEXT_IMG_MAX_WIDTH = 4096;
+const TEXT_IMG_MAX_HEIGHT = 8192;
+const TEXT_IMG_BG = "#0d1117"; // terminal-style dark background
+const TEXT_IMG_FG = "#e6edf3";
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Renders a plain-text file (incl. ASCII art) into a PNG image. */
+export async function textToImage(opts: DocJob): Promise<string[]> {
+  const { inputPath, outputDir, report } = opts;
+  const base = baseNameOf(inputPath);
+  const text = fs.readFileSync(inputPath, "utf8").replace(/\r\n?/g, "\n");
+  const lines = text.split("\n");
+  // Files usually end with a trailing newline; drop the phantom blank row.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+
+  const rows = Math.max(lines.length, 1);
+  const cols = Math.max(...lines.map((l) => l.length), 1);
+
+  // Pick a font size that keeps the image within sane bounds.
+  let fontSize = TEXT_IMG_FONT_SIZE;
+  let width = Math.ceil(cols * fontSize * TEXT_IMG_CHAR_RATIO);
+  let height = Math.ceil(rows * fontSize * TEXT_IMG_LINE_RATIO);
+  while ((width > TEXT_IMG_MAX_WIDTH || height > TEXT_IMG_MAX_HEIGHT) && fontSize > 6) {
+    fontSize -= 1;
+    width = Math.ceil(cols * fontSize * TEXT_IMG_CHAR_RATIO);
+    height = Math.ceil(rows * fontSize * TEXT_IMG_LINE_RATIO);
+  }
+  if (width > TEXT_IMG_MAX_WIDTH || height > TEXT_IMG_MAX_HEIGHT) {
+    throw new Error("This text file is too large to render as an image.");
+  }
+
+  report({ percent: 60, stage: "Rendering text → image…" });
+
+  // One <text> per line; xml:space="preserve" keeps the spaces that shape
+  // ASCII art intact, and librsvg resolves monospace via fontconfig.
+  const glyphs = lines
+    .map((line, i) => {
+      const y = Math.ceil((i + 1) * fontSize * TEXT_IMG_LINE_RATIO);
+      return `<text x="0" y="${y}" xml:space="preserve" font-family="'DejaVu Sans Mono','Courier New',monospace" font-size="${fontSize}" fill="${TEXT_IMG_FG}">${escapeXml(line)}</text>`;
+    })
+    .join("\n");
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+<rect width="100%" height="100%" fill="${TEXT_IMG_BG}"/>
+${glyphs}
+</svg>`;
+
+  const outputPath = uniquePath(outputDir, base, "png");
+  await sharp(Buffer.from(svg)).png().toFile(outputPath);
+  report({ percent: 100, stage: "Done" });
+  return [outputPath];
+}
+
+// ------------------------------------------------------------
 // Plain text / Markdown → PDF or HTML
 // ------------------------------------------------------------
 function escapeHtml(s: string): string {
@@ -210,6 +274,11 @@ export async function textOrMarkdownToOutput(opts: DocJob): Promise<string[]> {
   const isMd = ext === "md" || ext === "markdown";
 
   report({ percent: 40, stage: "Building document…" });
+
+  // TXT → PNG renders the raw text (incl. ASCII art) into an image.
+  if (target === "png") {
+    return await textToImage(opts);
+  }
 
   // Any plain-text file is already valid Markdown, so TXT → MD is a copy.
   if (target === "md") {

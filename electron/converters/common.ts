@@ -91,3 +91,17 @@ export const QUALITY_META: Record<
   high: { imageQuality: 95, videoCrf: 18, audioBitrate: "320k", pdfScale: 3 },
   lossless: { imageQuality: 100, videoCrf: 12, audioBitrate: "320k", pdfScale: 4 },
 };
+
+/** Human-friendly suggestion for common ffmpeg/sharp errors. */
+export function friendlyError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (s.includes("no such file") || s.includes("file not found")) return raw + " — Check the file still exists and the path is correct.";
+  if (s.includes("invalid data") || s.includes("decode") ) return raw + " — File may be corrupted or not actually the format its extension claims. Try opening it in another app.";
+  if (s.includes("unsupported") || s.includes("unknown encoder")) return raw + " — This format combination isn’t supported. Try a more common target like PNG or MP4.";
+  if (s.includes("permission") ) return raw + " — Permission denied. Check the file isn’t locked and the output folder is writable.";
+  if (s.includes("pixel") || s.includes("80 mp")) return raw + " — Image is too large (80MP limit). Try resizing before conversion.";
+  if (s.includes("1 gb") || s.includes("safety limit")) return raw + " — File exceeds L2L’s safety limit. Split it or choose a smaller file.";
+  if (s.includes("cancelled")) return "Cancelled by user.";
+  if (s.includes("timeout") || s.includes("two-hour")) return raw + " — Conversion took too long and was stopped for safety.";
+  return raw;
+}

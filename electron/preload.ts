@@ -25,6 +25,9 @@ const api: ElectronAPI = {
   convert: (job: ConvertJob): Promise<ConvertResult> =>
     ipcRenderer.invoke("convert", job),
 
+  cancelConvert: (id: string): Promise<void> =>
+    ipcRenderer.invoke("cancelConvert", id),
+
   onProgress: (cb: (e: ProgressEvent) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, e: ProgressEvent) => cb(e);
     ipcRenderer.on("convert:progress", listener);
@@ -38,6 +41,18 @@ const api: ElectronAPI = {
   },
 
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+
+  readFileAsText: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke("readFileAsText", filePath),
+
+  readFileAsBase64: (filePath: string): Promise<{ base64: string; mime: string }> =>
+    ipcRenderer.invoke("readFileAsBase64", filePath),
+
+  getModelInfo: (filePath: string): Promise<{ vertices: number; triangles: number; ext: string } | null> =>
+    ipcRenderer.invoke("getModelInfo", filePath),
+
+  getSpreadsheetPreview: (filePath: string): Promise<{ headers: string[]; rows: string[][]; sheetName: string } | null> =>
+    ipcRenderer.invoke("getSpreadsheetPreview", filePath),
 };
 
 contextBridge.exposeInMainWorld("electronAPI", api);

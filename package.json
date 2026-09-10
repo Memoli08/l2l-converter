@@ -1,6 +1,6 @@
 {
   "name": "l2l-converter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "L2L — Local file converter. Batch-convert images, video, audio and documents. 100% local & private.",
   "main": "dist-electron/electron/main.js",
   "author": "Memoli08",
@@ -14,10 +14,11 @@
     "start": "npm run build && node scripts/launch.js",
     "test": "npm run build:electron && node scripts/launch.js test/run-in-electron.js",
     "test:matrix": "npm run build:electron && node scripts/launch.js test/matrix-test.js",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "checksums": "bash scripts/release-checksums.sh"
+    "dist:linux": "npm run build && electron-builder --linux && npm run checksums",
+    "dist:win": "npm run build && electron-builder --win && npm run checksums",
+    "dist:mac": "npm run build && electron-builder --mac && npm run checksums",
+    "checksums": "bash scripts/release-checksums.sh",
+    "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",

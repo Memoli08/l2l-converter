@@ -17,7 +17,7 @@ export interface Target {
 
 // ---- Supported extensions ----
 export const IMAGE_EXTS = [
-  "png", "jpg", "jpeg", "webp", "gif", "avif", "tif", "tiff", "bmp", "svg",
+  "png", "jpg", "jpeg", "webp", "gif", "avif", "tif", "tiff", "bmp", "svg", "heic", "heif",
 ];
 export const VIDEO_EXTS = [
   "mp4", "mkv", "webm", "mov", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "m4v", "ogv",
@@ -132,6 +132,7 @@ export function targetsFor(ext: string): Target[] {
           return PDF_TARGETS;
         case "txt":
           return [
+            { id: "png", label: "PNG", kind: "image", hint: "Text / ASCII art → image" },
             { id: "md", label: "Markdown", kind: "document" },
             { id: "html", label: "HTML", kind: "document" },
             { id: "pdf", label: "PDF", kind: "document" },

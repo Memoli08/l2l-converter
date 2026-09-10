@@ -11,7 +11,7 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
 import type { Quality } from "../../shared/formats";
-import { QUALITY_META, Reporter, uniquePath } from "./common";
+import { friendlyError, QUALITY_META, Reporter, uniquePath } from "./common";
 
 if (!ffmpegPath) throw new Error("ffmpeg-static binary could not be resolved.");
 if (!ffprobeStatic?.path) throw new Error("ffprobe-static binary could not be resolved.");
@@ -21,7 +21,31 @@ const FFPROBE = ffprobeStatic.path;
 const PROCESS_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MAX_STDERR_BYTES = 512 * 1024;
 
+// Active ffmpeg procs by job id — for cancellation
+const activeProcs = new Map<string, ReturnType<typeof spawn>>();
+
+export function cancelActiveJob(id: string): boolean {
+  const proc = activeProcs.get(id);
+  if (proc) {
+    try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+    activeProcs.delete(id);
+    return true;
+  }
+  return false;
+}
+
+export function getActiveJobCount(): number {
+  return activeProcs.size;
+}
+
+const probeCache = new Map<string, { duration: number; mtime: number }>();
+
 function probeDuration(inputPath: string): Promise<number> {
+  try {
+    const stat = require("node:fs").statSync(inputPath);
+    const cached = probeCache.get(inputPath);
+    if (cached && cached.mtime === stat.mtimeMs) return Promise.resolve(cached.duration);
+  } catch { /* ignore */ }
   return new Promise((resolve) => {
     const proc = spawn(FFPROBE, [
       "-v", "error",
@@ -36,7 +60,16 @@ function probeDuration(inputPath: string): Promise<number> {
     proc.on("error", () => resolve(0));
     proc.on("close", () => {
       const n = parseFloat(out.trim());
-      resolve(Number.isFinite(n) ? n : 0);
+      const dur = Number.isFinite(n) ? n : 0;
+      try {
+        const stat2 = require("node:fs").statSync(inputPath);
+        probeCache.set(inputPath, { duration: dur, mtime: stat2.mtimeMs });
+        if (probeCache.size > 200) {
+          const first = probeCache.keys().next().value;
+          if (first) probeCache.delete(first);
+        }
+      } catch { /* ignore */ }
+      resolve(dur);
     });
   });
 }
@@ -48,48 +81,73 @@ function extractError(stderr: string): string {
   return lines.slice(-4).join(" ").trim();
 }
 
-function runFfmpeg(args: string[], report: Reporter, durationSec: number): Promise<void> {
+function runFfmpeg(args: string[], report: Reporter, durationSec: number, jobId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(FFMPEG, [
       "-hide_banner", "-nostdin", "-y",
       "-progress", "pipe:1",
       ...args,
     ], { stdio: ["ignore", "pipe", "pipe"] });
+    if (jobId) activeProcs.set(jobId, proc);
 
     let stderr = "";
     let lastPct = 0;
     let timedOut = false;
+    let stdoutBuf = "";
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill("SIGKILL");
     }, PROCESS_TIMEOUT_MS);
 
     proc.stdout.on("data", (d: Buffer) => {
-      // ffmpeg -progress emits `out_time_us=<microseconds>` lines
-      const m = /out_time_us=(\d+)/.exec(d.toString());
-      if (m && durationSec > 0) {
-        const secs = parseInt(m[1], 10) / 1_000_000;
-        const pct = Math.min(99, Math.round((secs / durationSec) * 100));
-        if (pct > lastPct) {
-          lastPct = pct;
-          report({ percent: pct, stage: "Processing…" });
+      // ffmpeg -progress is line-delimited; Buffer may split lines arbitrarily
+      // so we accumulate and parse per-line.
+      stdoutBuf += d.toString();
+      let idx: number;
+      while ((idx = stdoutBuf.indexOf("\n")) !== -1) {
+        const line = stdoutBuf.slice(0, idx);
+        stdoutBuf = stdoutBuf.slice(idx + 1);
+        const m = /out_time_us=(\d+)/.exec(line);
+        if (m && durationSec > 0) {
+          const secs = parseInt(m[1], 10) / 1_000_000;
+          const pct = Math.min(99, Math.round((secs / durationSec) * 100));
+          if (pct > lastPct) {
+            lastPct = pct;
+            report({ percent: pct, stage: "Processing…" });
+          }
+        }
+        // Also handle progress=end → 100% even if duration unknown
+        if (line.includes("progress=end") && durationSec === 0) {
+          report({ percent: 99, stage: "Finalizing…" });
         }
       }
+      // Prevent unbounded growth on malformed output
+      if (stdoutBuf.length > 4096) stdoutBuf = stdoutBuf.slice(-4096);
     });
 
     proc.stderr.on("data", (d: Buffer) => {
       if (stderr.length < MAX_STDERR_BYTES) stderr += d.toString();
     });
-    proc.on("error", (err) => reject(new Error(err.message || String(err))));
-    proc.on("close", (code) => {
+    proc.on("error", (err) => {
       clearTimeout(timer);
+      if (jobId) activeProcs.delete(jobId);
+      reject(new Error(err.message || String(err)));
+    });
+    proc.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (jobId) activeProcs.delete(jobId);
+      if (signal === "SIGKILL" && !timedOut) {
+        reject(new Error("Cancelled by user."));
+        return;
+      }
       if (code === 0) {
         report({ percent: 100, stage: "Done" });
         resolve();
       } else if (timedOut) {
-        reject(new Error("Conversion exceeded L2L's two-hour safety limit."));
+        reject(new Error(friendlyError("Conversion exceeded L2L's two-hour safety limit.")));
       } else {
-        reject(new Error(extractError(stderr) || `ffmpeg exited with code ${code}`));
+        const hint = stderr.length >= MAX_STDERR_BYTES ? " (output truncated)" : "";
+        reject(new Error(friendlyError((extractError(stderr) || `ffmpeg exited with code ${code}`) + hint)));
       }
     });
   });
@@ -148,6 +206,7 @@ function audioEncoderArgs(target: string, quality: Quality, bitrate: string): st
 }
 
 export interface MediaJob {
+  id?: string;
   inputPath: string;
   target: string;
   quality: Quality;
@@ -174,7 +233,7 @@ export async function convertVideo(opts: MediaJob): Promise<string[]> {
         outputPath,
       ],
       report,
-      duration,
+      duration, opts.id,
     );
     return [outputPath];
   }
@@ -185,7 +244,7 @@ export async function convertVideo(opts: MediaJob): Promise<string[]> {
     await runFfmpeg(
       ["-i", inputPath, "-vn", ...audioEncoderArgs("mp3", quality, QUALITY_META[quality].audioBitrate), outputPath],
       report,
-      duration,
+      duration, opts.id,
     );
     return [outputPath];
   }
@@ -195,7 +254,7 @@ export async function convertVideo(opts: MediaJob): Promise<string[]> {
   await runFfmpeg(
     ["-i", inputPath, ...videoEncoderArgs(target, QUALITY_META[quality].videoCrf), outputPath],
     report,
-    duration,
+    duration, opts.id,
   );
   return [outputPath];
 }
@@ -212,7 +271,7 @@ export async function convertAudio(opts: MediaJob): Promise<string[]> {
   await runFfmpeg(
     ["-i", inputPath, "-vn", ...audioEncoderArgs(target, quality, QUALITY_META[quality].audioBitrate), outputPath],
     report,
-    duration,
+    duration, opts.id,
   );
   return [outputPath];
 }

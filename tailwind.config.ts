@@ -10,11 +10,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Unified with globals.css :root tokens (--ink-*, --accent)
         ink: {
-          950: "#060910",
-          900: "#0a0f1c",
-          850: "#0e1526",
-          800: "#131b30",
+          950: "#070b10",
+          900: "#0c1218",
+          850: "#111a21",
+          800: "#16222a",
           700: "#1c2742",
           600: "#2a3a5e",
         },
@@ -25,10 +26,14 @@ const config: Config = {
           600: "#7c3aed",
         },
         accent: {
-          300: "#67e8f9",
-          400: "#22d3ee",
-          500: "#06b6d4",
+          DEFAULT: "#69dfcb",
+          strong: "#b1fff0",
+          300: "#a9f2e5",
+          400: "#69dfcb",
+          500: "#3db9a6",
         },
+        line: "rgba(205,225,226,0.12)",
+        muted: "#82939a",
       },
       fontFamily: {
         sans: [

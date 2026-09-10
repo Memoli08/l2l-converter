@@ -653,6 +653,17 @@ function fmt(n: number): string {
   return s;
 }
 
+export function getMeshInfo(buf: Buffer, ext: string): { vertices: number; triangles: number } | null {
+  try {
+    const reader = READERS[ext.toLowerCase()];
+    if (!reader) return null;
+    const mesh = reader(buf);
+    return { vertices: mesh.vertices.length / 3, triangles: mesh.triangles.length / 3 };
+  } catch {
+    return null;
+  }
+}
+
 const READERS: Record<string, (buf: Buffer) => Mesh> = {
   stl: parseStl,
   obj: parseObj,

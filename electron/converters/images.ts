@@ -26,6 +26,8 @@ export interface ImageJob {
   quality: Quality;
   outputDir: string;
   report: Reporter;
+  color?: string;
+  imageOptions?: import("../../shared/ipc").ImageOptions;
 }
 
 /**
@@ -34,14 +36,16 @@ export interface ImageJob {
  * fine, so we normalize BMP → temporary PNG first and return that path.
  * Returns the original path untouched for every other format.
  */
+const FFMPEG_FALLBACK_EXTS = new Set(["bmp", "heic", "heif"]);
+
 async function ensureSharpReadable(inputPath: string): Promise<string> {
   const ext = path.extname(inputPath).slice(1).toLowerCase();
-  if (ext !== "bmp") return inputPath;
+  if (!FFMPEG_FALLBACK_EXTS.has(ext)) return inputPath;
 
-  const tmp = path.join(os.tmpdir(), `l2l-bmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+  const tmp = path.join(os.tmpdir(), `l2l-${ext}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
   await new Promise<void>((resolve, reject) => {
     if (!ffmpegPath) {
-      reject(new Error("ffmpeg binary unavailable — cannot read BMP files."));
+      reject(new Error(`ffmpeg binary unavailable — cannot read ${ext.toUpperCase()} files.`));
       return;
     }
     const proc = spawn(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-i", inputPath, tmp]);
@@ -52,7 +56,7 @@ async function ensureSharpReadable(inputPath: string): Promise<string> {
     proc.on("error", (e) => reject(new Error(`ffmpeg failed to start: ${e.message}`)));
     proc.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(err.trim().slice(-200) || `Failed to read BMP file (ffmpeg exited ${code}).`));
+      else reject(new Error(err.trim().slice(-200) || `Failed to read ${ext.toUpperCase()} file (ffmpeg exited ${code}).`));
     });
   });
   return tmp;
@@ -74,11 +78,17 @@ async function runConvert(inputPath: string, opts: ImageJob, base: string, q: nu
 
   // ---- ASCII art (photo → monospace text) ----
   if (target === "ascii") {
-    const outputPath = uniquePath(outputDir, `${base}-ascii`, "txt");
+    const txtPath = uniquePath(outputDir, `${base}-ascii`, "txt");
     report({ percent: 15, stage: "Rendering ASCII art…" });
-    await convertToAscii(inputPath, outputPath, report);
+    await convertToAscii(inputPath, txtPath, report, opts.color);
+    const outputs: string[] = [txtPath];
+    // If a colour was chosen, the converter also writes an HTML file.
+    const htmlPath = txtPath.replace(/\.txt$/i, ".html");
+    try {
+      if (fs.existsSync(htmlPath)) outputs.push(htmlPath);
+    } catch { /* ignore */ }
     report({ percent: 100, stage: "Done" });
-    return [outputPath];
+    return outputs;
   }
 
   // ---- image → PDF (via pdf-lib, embedding a normalized PNG) ----
@@ -104,6 +114,20 @@ async function runConvert(inputPath: string, opts: ImageJob, base: string, q: nu
   const outputPath = uniquePath(outputDir, base, ext);
 
   let pipeline = sharp(inputPath, SHARP_LIMITS).rotate();
+  // Apply optional resize/rotate from UI (quality stays automatic)
+  const optsImg = opts.imageOptions;
+  if (optsImg) {
+    if (optsImg.rotate && [90, 180, 270].includes(optsImg.rotate)) {
+      pipeline = pipeline.rotate(optsImg.rotate);
+    }
+    if (optsImg.width || optsImg.height) {
+      const w = optsImg.width && optsImg.width > 0 && optsImg.width <= 10000 ? Math.round(optsImg.width) : undefined;
+      const h = optsImg.height && optsImg.height > 0 && optsImg.height <= 10000 ? Math.round(optsImg.height) : undefined;
+      if (w || h) {
+        pipeline = pipeline.resize({ width: w, height: h, fit: optsImg.fit ?? "inside", withoutEnlargement: false });
+      }
+    }
+  }
   switch (target) {
     case "jpg":
       pipeline = pipeline.jpeg({ quality: q, mozjpeg: true });

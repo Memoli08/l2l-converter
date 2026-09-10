@@ -20,6 +20,7 @@ interface Props {
 
 export default function Dropzone({ compact = false, onAdd, onBrowse }: Props) {
   const [active, setActive] = useState(false);
+  const [rejected, setRejected] = useState<string[]>([]);
 
   const browse = useCallback(async () => {
     if (onBrowse) {
@@ -37,9 +38,14 @@ export default function Dropzone({ compact = false, onAdd, onBrowse }: Props) {
       setActive(false);
       const electronApi = api;
       if (!electronApi) return;
-      const entries: AddedFile[] = Array.from(e.dataTransfer.files)
-        .filter((f) => isSupported(extOf(f.name)))
-        .map((f) => ({ path: electronApi.getPathForFile(f), size: f.size }));
+      const allFiles = Array.from(e.dataTransfer.files);
+      const supported = allFiles.filter((f) => isSupported(extOf(f.name)));
+      const unsupported = allFiles.filter((f) => !isSupported(extOf(f.name))).map((f) => f.name);
+      if (unsupported.length) {
+        setRejected(unsupported.slice(0, 5));
+        window.setTimeout(() => setRejected([]), 4000);
+      }
+      const entries: AddedFile[] = supported.map((f) => ({ path: electronApi.getPathForFile(f), size: f.size }));
       if (entries.length) onAdd(entries);
     },
     [onAdd],
@@ -57,18 +63,25 @@ export default function Dropzone({ compact = false, onAdd, onBrowse }: Props) {
   // ---------- compact variant: small "add more" strip ----------
   if (compact) {
     return (
-      <button
-        type="button"
-        onClick={browse}
-        disabled={!isElectron}
-        {...dragProps}
-        className={`dropzone-shell group flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-white/[0.02] px-4 py-3 text-sm text-slate-400 transition hover:border-[#69dfcb]/50 hover:text-[#a9f2e5] disabled:cursor-not-allowed disabled:opacity-50 ${
-          active ? "dropzone-active" : ""
-        }`}
-      >
-        <PlusIcon className="h-4 w-4 transition-transform group-hover:rotate-90" />
-        <span>Drop more files here or <span className="font-medium text-violet-300">browse</span>…</span>
-      </button>
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={browse}
+          disabled={!isElectron}
+          {...dragProps}
+          className={`dropzone-shell group flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-white/[0.02] px-4 py-3 text-sm text-slate-400 transition hover:border-[#69dfcb]/50 hover:text-[#a9f2e5] disabled:cursor-not-allowed disabled:opacity-50 ${
+            active ? "dropzone-active" : ""
+          }`}
+        >
+          <PlusIcon className="h-4 w-4 transition-transform group-hover:rotate-90" />
+          <span>Drop more files here or <span className="font-medium text-violet-300">browse</span>…</span>
+        </button>
+        {rejected.length > 0 && (
+          <p className="animate-fade-in rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-300">
+            Skipped unsupported: {rejected.join(", ")}{rejected.length >= 5 ? "…" : ""}
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -116,6 +129,12 @@ export default function Dropzone({ compact = false, onAdd, onBrowse }: Props) {
         <FolderIcon className="h-4 w-4" />
         Browse files
       </button>
+
+      {rejected.length > 0 && (
+        <p className="animate-fade-in max-w-xl rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-300">
+          Skipped unsupported files: {rejected.join(", ")}{rejected.length >= 5 ? "…" : ""} — only 45+ listed formats are supported.
+        </p>
+      )}
 
       {!isElectron && (
         <p className="text-xs text-amber-300/80">

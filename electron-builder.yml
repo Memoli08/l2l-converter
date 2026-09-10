@@ -22,12 +22,17 @@ linux:
     - zip
   category: Utility
   icon: assets/icon.png
+  artifactName: "l2l-converter-${version}-${arch}.${ext}"
 win:
   target:
     - nsis
   icon: assets/icon.png
+  artifactName: "l2l-converter-${version}-${arch}.${ext}"
 mac:
   target:
     - dmg
   icon: assets/icon.png
   category: public.app-category.utilities
+  artifactName: "l2l-converter-${version}-${arch}.${ext}"
+# Ensure checksums step is part of CI: npm run checksums after dist
+publish: null

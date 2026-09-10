@@ -8,6 +8,7 @@ import type { FileKind } from "@/shared/formats";
 
 import Dropzone, { AddedFile } from "./Dropzone";
 import FileCard from "./FileCard";
+import FileViewer from "./FileViewer";
 import Toolbar from "./Toolbar";
 import Toasts from "./Toasts";
 import { Header } from "./Header";
@@ -39,6 +40,8 @@ export interface FileItem {
   stage?: string;
   error?: string;
   outputs?: string[];
+  color?: string | null;
+  imageOptions?: { width?: number; height?: number; rotate?: number };
 }
 
 export interface ToastItem {
@@ -47,7 +50,21 @@ export interface ToastItem {
   message: string;
 }
 
-const CONCURRENCY = 2;
+function getConcurrency(): number {
+  // Heuristic: 1 worker per 3 logical cores, clamped 2–4.
+  // Keeps UI responsive on low-end, uses more cores on workstations.
+  // Allow override via window.L2L_CONCURRENCY for power users / tests.
+  try {
+    const override = (typeof window !== "undefined" && (window as unknown as Record<string, unknown>).L2L_CONCURRENCY) as unknown;
+    if (typeof override === "number" && override >= 1 && override <= 8) return Math.round(override);
+  } catch { /* ignore */ }
+  const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 4) : 4;
+  if (cores <= 2) return 2;
+  if (cores <= 6) return 2;
+  if (cores <= 10) return 3;
+  return 4;
+}
+const CONCURRENCY_FALLBACK = 2;
 // Quality is always max — the app auto-picks the best encoder settings,
 // no user setting required (per product decision).
 const BEST_QUALITY = "lossless" as const;
@@ -153,6 +170,8 @@ const FEATURE_TARGETS: Record<string, string> = {
   ascii: "ascii",
 };
 
+interface HistoryEntry { at: string; name: string; target: string; outputs: string[]; }
+
 export default function Converter() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [outputMode, setOutputMode] = useState<"source" | "folder">("source");
@@ -160,10 +179,21 @@ export default function Converter() {
   const [running, setRunning] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [activeShowcase, setActiveShowcase] = useState<string | null>(null);
+  const [viewerFile, setViewerFile] = useState<FileItem | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [filterKind, setFilterKind] = useState<FileKind | "all">("all");
+  const [search, setSearch] = useState("");
+  const dragIdxRef = useRef<number | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [folderHistory, setFolderHistory] = useState<string[]>([]);
 
   const filesRef = useRef(files);
   const runningRef = useRef(false);
   const activeRef = useRef(activeShowcase);
+  const convertAllRef = useRef<() => Promise<void>>(async () => {});
+  // A conversion pool takes a snapshot of its queue. Keep cancellation state
+  // outside React state so a queued item can be skipped before its worker starts.
+  const cancelledIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     filesRef.current = files;
   }, [files]);
@@ -176,6 +206,13 @@ export default function Converter() {
     void api.getPreference("outputFolder").then((savedFolder) => {
       if (savedFolder) setOutputFolder(savedFolder);
     });
+    // load history from localStorage (renderer-only)
+    try {
+      const raw = localStorage.getItem("l2l:history");
+      if (raw) setHistory(JSON.parse(raw));
+      const rawFolders = localStorage.getItem("l2l:folderHistory");
+      if (rawFolders) setFolderHistory(JSON.parse(rawFolders));
+    } catch { /* ignore */ }
   }, []);
 
   // ---- toasts ----
@@ -257,6 +294,49 @@ export default function Converter() {
     );
   }, []);
 
+  const setColor = useCallback((id: string, color: string | null) => {
+    setFiles((fs) =>
+      fs.map((f) => (f.id === id ? { ...f, color } : f)),
+    );
+  }, []);
+
+  const setImageOptions = useCallback((id: string, opts: { width?: number; height?: number; rotate?: number }) => {
+    setFiles((fs) => fs.map((f) => (f.id === id ? { ...f, imageOptions: { ...(f.imageOptions ?? {}), ...opts } } : f)));
+  }, []);
+
+  const clearImageOptions = useCallback((id: string) => {
+    setFiles((fs) => fs.map((f) => (f.id === id ? { ...f, imageOptions: undefined } : f)));
+  }, []);
+
+  const retryFile = useCallback((id: string) => {
+    cancelledIdsRef.current.delete(id);
+    setFiles((fs) =>
+      fs.map((f) =>
+        f.id === id ? { ...f, status: "idle" as Status, percent: 0, error: undefined, stage: undefined } : f,
+      ),
+    );
+    setTimeout(() => void convertAllRef.current(), 0);
+  }, []);
+
+  const cancelFile = useCallback((id: string) => {
+    cancelledIdsRef.current.add(id);
+    void api?.cancelConvert(id);
+    setFiles((fs) => fs.map((f) => (f.id === id ? { ...f, status: "error" as Status, error: "Cancelled", stage: "Cancelled", percent: 0 } : f)));
+  }, []);
+
+  const cancelAll = useCallback(() => {
+    for (const f of filesRef.current.filter((f) => f.status === "running" || f.status === "queued")) {
+      cancelledIdsRef.current.add(f.id);
+      void api?.cancelConvert(f.id);
+    }
+    setFiles((fs) => fs.map((f) => (f.status === "running" || f.status === "queued" ? { ...f, status: "error" as Status, error: "Cancelled", stage: "Cancelled", percent: 0 } : f)));
+  }, []);
+
+  const openViewer = useCallback((id: string) => {
+    const found = filesRef.current.find((f) => f.id === id);
+    if (found) setViewerFile(found);
+  }, []);
+
   const clearCompleted = useCallback(() => {
     setFiles((fs) => fs.filter((f) => f.status !== "done"));
   }, []);
@@ -272,11 +352,110 @@ export default function Converter() {
     });
   }, []);
 
+  const reorder = useCallback((from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    setFiles((fs) => {
+      if (from >= fs.length || to >= fs.length) return fs;
+      const next = [...fs];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    // compute visible ids inline to avoid dep on filteredFiles defined later
+    setFiles((fs) => fs); // noop to keep deps simple, then compute via filesRef
+    const all = filesRef.current;
+    const visible = all.filter((f) => {
+      const matchKind = filterKind === "all" || f.kind === filterKind;
+      const matchSearch = !search || f.name.toLowerCase().includes(search.toLowerCase());
+      return matchKind && matchSearch;
+    });
+    const visibleIds = visible.map((f) => f.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        visibleIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        visibleIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  }, [filterKind, search, selectedIds]);
+
+  const bulkSetTarget = useCallback((target: string) => {
+    if (selectedIds.size === 0) return;
+    setFiles((fs) =>
+      fs.map((f) => {
+        if (!selectedIds.has(f.id)) return f;
+        const allowed = targetsFor(f.ext).map((t) => t.id);
+        if (!allowed.includes(target)) return f;
+        return { ...f, target, status: "idle" as Status, percent: 0, error: undefined, outputs: undefined, stage: undefined };
+      }),
+    );
+    toast("info", `Target → ${target.toUpperCase()} for ${selectedIds.size} file(s)`);
+  }, [selectedIds, toast]);
+
+  const bulkRemove = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    setFiles((fs) => fs.filter((f) => !selectedIds.has(f.id)));
+    setSelectedIds(new Set());
+    toast("info", "Selected files removed");
+  }, [selectedIds, toast]);
+
+  const bulkRetry = useCallback(() => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    ids.forEach((id) => cancelledIdsRef.current.delete(id));
+    setFiles((fs) => fs.map((f) => (ids.includes(f.id) ? { ...f, status: "idle" as Status, percent: 0, error: undefined, stage: undefined } : f)));
+    setTimeout(() => void convertAllRef.current(), 0);
+  }, [selectedIds]);
+
+  // ---- keyboard shortcuts ----
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && files.length > 0) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        e.preventDefault();
+        toggleSelectAll();
+      }
+      if (e.key === "Delete" && selectedIds.size > 0 && !running) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        bulkRemove();
+      }
+      if (e.key === "Escape") {
+        if (viewerFile) setViewerFile(null);
+        else if (selectedIds.size > 0) setSelectedIds(new Set());
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [files.length, selectedIds, running, viewerFile, toggleSelectAll, bulkRemove]);
+
   // ---- batch conversion (bounded pool) ----
   const convertAll = useCallback(async () => {
     if (!api || runningRef.current) return;
     const queue = filesRef.current.filter((f) => f.status === "idle" || f.status === "error");
     if (queue.length === 0) return;
+    // Retrying a prior cancellation creates a fresh job.
+    queue.forEach((item) => cancelledIdsRef.current.delete(item.id));
 
     runningRef.current = true;
     setRunning(true);
@@ -295,6 +474,7 @@ export default function Converter() {
     const worker = async () => {
       while (cursor < queue.length) {
         const item = queue[cursor++];
+        if (cancelledIdsRef.current.has(item.id)) continue;
         setFiles((fs) =>
           fs.map((f) => (f.id === item.id ? { ...f, status: "running" as Status } : f)),
         );
@@ -306,6 +486,8 @@ export default function Converter() {
             target: item.target,
             quality: BEST_QUALITY,
             outputDir,
+            color: item.color ?? undefined,
+            imageOptions: item.imageOptions,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -328,6 +510,15 @@ export default function Converter() {
             ),
           );
           toast("success", `Converted ${item.name}`);
+          // persist history
+          try {
+            const entry: HistoryEntry = { at: new Date().toISOString(), name: item.name, target: item.target, outputs: res.outputs ?? [] };
+            setHistory((h) => {
+              const next = [entry, ...h].slice(0, 20);
+              localStorage.setItem("l2l:history", JSON.stringify(next));
+              return next;
+            });
+          } catch { /* ignore */ }
         } else {
           setFiles((fs) =>
             fs.map((f) =>
@@ -342,7 +533,8 @@ export default function Converter() {
     };
 
     try {
-      const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker);
+      const concurrency = Math.min(getConcurrency() || CONCURRENCY_FALLBACK, queue.length);
+      const workers = Array.from({ length: concurrency }, worker);
       await Promise.all(workers);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -352,11 +544,29 @@ export default function Converter() {
       setRunning(false);
     }
   }, [outputMode, outputFolder, toast]);
+  // Retry callbacks are intentionally stable; keep their conversion entry
+  // point current so they honour a newly selected output folder or mode.
+  convertAllRef.current = convertAll;
+
+  // ---- derived filtered view ----
+  const filteredFiles = files.filter((f) => {
+    const matchKind = filterKind === "all" || f.kind === filterKind;
+    const matchSearch = !search || f.name.toLowerCase().includes(search.toLowerCase());
+    return matchKind && matchSearch;
+  });
 
   // ---- render ----
   const doneCount = files.filter((f) => f.status === "done").length;
   const errorCount = files.filter((f) => f.status === "error").length;
   const activeCard = SHOWCASE.find((c) => c.id === activeShowcase) ?? null;
+  const bulkCommonTargets = (() => {
+    if (selectedIds.size === 0) return [];
+    const selected = files.filter((f) => selectedIds.has(f.id));
+    if (selected.length === 0) return [];
+    const sets = selected.map((f) => new Set(targetsFor(f.ext).map((t) => t.id)));
+    const first = Array.from(sets[0]);
+    return first.filter((t) => sets.every((s) => s.has(t)));
+  })();
 
   return (
     <div className="relative flex min-h-[100dvh] flex-col overflow-hidden">
@@ -489,6 +699,13 @@ export default function Converter() {
                 if (folder) {
                   setOutputFolder(folder);
                   void api.setPreference("outputFolder", folder);
+                  try {
+                    setFolderHistory((prev) => {
+                      const next = [folder, ...prev.filter((p) => p !== folder)].slice(0, 5);
+                      localStorage.setItem("l2l:folderHistory", JSON.stringify(next));
+                      return next;
+                    });
+                  } catch { /* ignore */ }
                 }
               }}
               onForgetFolder={() => {
@@ -500,24 +717,101 @@ export default function Converter() {
               onRetryFailed={() => void convertAll()}
               onClearCompleted={clearCompleted}
             />
+            {running && (
+              <div className="flex justify-end">
+                <button type="button" onClick={cancelAll} className="rounded-xl border border-rose-400/25 bg-rose-400/10 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-400/15">Cancel all running</button>
+              </div>
+            )}
 
             <div className="flex min-h-0 flex-1 flex-col gap-5 lg:flex-row">
               {/* file queue */}
               <div className="min-w-0 flex-1 space-y-3 overflow-y-auto pb-1 pr-1">
-                {files.map((f, i) => (
-                  <FileCard
+                {/* search + filter + select-all */}
+                <div className="panel-shell">
+                  <div className="panel-core flex flex-wrap items-center gap-2 p-2">
+                    <label className="flex items-center gap-2 text-xs text-slate-400">
+                      <input type="checkbox" checked={filteredFiles.length > 0 && filteredFiles.every((f) => selectedIds.has(f.id))} onChange={toggleSelectAll} className="h-4 w-4 rounded border-white/20 bg-transparent accent-[#69dfcb]" />
+                      Select all ({filteredFiles.length})
+                    </label>
+                    <div className="h-4 w-px bg-white/10" />
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search files…" className="min-w-[140px] flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 outline-none focus:border-[#69dfcb]/40" />
+                    <select value={filterKind} onChange={(e) => setFilterKind(e.target.value as FileKind | "all")} className="select-dark rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-200">
+                      <option value="all">All kinds</option>
+                      <option value="image">Images</option>
+                      <option value="video">Video</option>
+                      <option value="audio">Audio</option>
+                      <option value="document">Docs</option>
+                      <option value="model">3D</option>
+                    </select>
+                    {selectedIds.size > 0 && <span className="text-xs text-[#69dfcb]">{selectedIds.size} selected</span>}
+                    {search || filterKind !== "all" ? <button type="button" onClick={() => { setSearch(""); setFilterKind("all"); }} className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400 hover:text-slate-200">Clear filter</button> : null}
+                  </div>
+                </div>
+
+                {/* bulk bar */}
+                {selectedIds.size > 0 && (
+                  <div className="panel-shell border-[#69dfcb]/30">
+                    <div className="panel-core flex flex-wrap items-center gap-2 p-2">
+                      <span className="text-xs font-semibold text-slate-200">Bulk:</span>
+                      <select defaultValue="" onChange={(e) => { if (e.target.value) { bulkSetTarget(e.target.value); e.target.value = ""; } }} className="select-dark rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-200">
+                        <option value="" disabled>Change target…</option>
+                        {bulkCommonTargets.map((t) => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+                        {bulkCommonTargets.length === 0 && <option disabled>No common target</option>}
+                      </select>
+                      <button type="button" onClick={bulkRetry} disabled={running} className="rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-xs text-amber-200 hover:bg-amber-400/15 disabled:opacity-40">Retry selected</button>
+                      <button type="button" onClick={bulkRemove} disabled={running} className="rounded-lg border border-rose-400/25 bg-rose-400/10 px-2.5 py-1.5 text-xs text-rose-200 hover:bg-rose-400/15 disabled:opacity-40">Remove selected</button>
+                      <button type="button" onClick={() => setSelectedIds(new Set())} className="ml-auto rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-400">Clear selection</button>
+                    </div>
+                  </div>
+                )}
+
+                {filteredFiles.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center text-xs text-slate-500">No files match filter.</div>
+                ) : filteredFiles.map((f) => {
+                  const realIdx = files.findIndex((x) => x.id === f.id);
+                  return (
+                  <div
                     key={f.id}
+                    draggable={!running}
+                    onDragStart={() => { dragIdxRef.current = realIdx; }}
+                    onDragOver={(e) => { e.preventDefault(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const from = dragIdxRef.current;
+                      if (from == null) return;
+                      reorder(from, realIdx);
+                      dragIdxRef.current = null;
+                    }}
+                    className={`${selectedIds.has(f.id) ? "ring-1 ring-[#69dfcb]/40 rounded-2xl" : ""}`}
+                  >
+                  <FileCard
                     item={f}
-                    index={i}
+                    index={realIdx}
                     total={files.length}
-                    disabled={running}
+                    disabled={running && f.status !== "running" && f.status !== "queued"}
+                    selected={selectedIds.has(f.id)}
+                    onToggleSelect={toggleSelect}
                     onRemove={removeFile}
                     onTargetChange={setTarget}
+                    onRetry={retryFile}
+                    onCancel={cancelFile}
                     onReveal={(p) => api?.revealFile(p)}
                     onMove={moveFile}
+                    onColorChange={setColor}
+                    onImageOptions={setImageOptions}
+                    onClearImageOptions={clearImageOptions}
+                    onView={openViewer}
                   />
-                ))}
+                  </div>
+                  );
+                })}
               </div>
+
+              {/* file viewer panel */}
+              <FileViewer
+                item={viewerFile}
+                onClose={() => setViewerFile(null)}
+              />
 
               {/* session summary sidebar */}
               <aside className="panel-shell hidden w-64 shrink-0 self-start lg:flex">
@@ -545,6 +839,32 @@ export default function Converter() {
                   <ShieldIcon className="h-3.5 w-3.5 text-emerald-400/70" />
                   Originals are never modified
                 </div>
+                {folderHistory.length > 0 && (
+                  <div className="border-t border-white/5 pt-3">
+                    <p className="eyebrow mb-2">Recent folders</p>
+                    <div className="space-y-1">
+                      {folderHistory.map((p) => (
+                        <button key={p} type="button" onClick={() => { setOutputFolder(p); setOutputMode("folder"); void api?.setPreference("outputFolder", p); }} className="block w-full truncate rounded bg-white/[0.03] px-2 py-1 text-left text-[11px] text-slate-400 hover:text-slate-200" title={p}>{p}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {history.length > 0 && (
+                  <div className="border-t border-white/5 pt-3">
+                    <div className="flex items-center justify-between">
+                      <p className="eyebrow">History</p>
+                      <button type="button" onClick={() => { setHistory([]); try{localStorage.removeItem("l2l:history");}catch{} }} className="text-[11px] text-slate-500 hover:text-slate-300">Clear</button>
+                    </div>
+                    <div className="mt-2 max-h-40 space-y-1 overflow-auto pr-1">
+                      {history.map((h, i) => (
+                        <div key={i} className="rounded bg-white/[0.03] px-2 py-1.5">
+                          <p className="truncate text-[11px] font-medium text-slate-300">{h.name} → {h.target.toUpperCase()}</p>
+                          <p className="text-[10px] text-slate-500">{new Date(h.at).toLocaleTimeString()} · {h.outputs.length} file(s)</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 </div>
               </aside>
             </div>

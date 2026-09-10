@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { targetsFor } from "@/shared/formats";
 import type { FileItem } from "./Converter";
 import { formatSize } from "./Converter";
+import AsciiColorPicker from "./AsciiColorPicker";
 import {
   AlertIcon,
   ArrowDownIcon,
@@ -59,13 +60,21 @@ interface Props {
   index: number;
   total: number;
   disabled: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
   onRemove: (id: string) => void;
   onTargetChange: (id: string, target: string) => void;
+  onRetry: (id: string) => void;
+  onCancel?: (id: string) => void;
   onReveal: (path: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
+  onColorChange: (id: string, color: string | null) => void;
+  onImageOptions?: (id: string, opts: { width?: number; height?: number; rotate?: number }) => void;
+  onClearImageOptions?: (id: string) => void;
+  onView: (id: string) => void;
 }
 
-export default function FileCard({ item, index, total, disabled, onRemove, onTargetChange, onReveal, onMove }: Props) {
+export default function FileCard({ item, index, total, disabled, selected, onToggleSelect, onRemove, onTargetChange, onRetry, onCancel, onReveal, onMove, onColorChange, onImageOptions, onClearImageOptions, onView }: Props) {
   const kindStyle = item.kind ? KIND_STYLES[item.kind] : KIND_STYLES.document;
   const targets = targetsFor(item.ext);
   const done = item.status === "done";
@@ -74,13 +83,16 @@ export default function FileCard({ item, index, total, disabled, onRemove, onTar
     <div
       className={`panel-shell animate-slide-up group transition-all duration-300 hover:border-[#69dfcb]/25 ${
         done ? "border-emerald-400/20" : ""
-      }`}
+      } ${selected ? "border-[#69dfcb]/50 bg-[#69dfcb]/[0.04]" : ""}`}
       style={{ animationDelay: `${Math.min(index * 45, 400)}ms` }}
     >
       <div className="panel-core flex flex-col gap-3 p-4 sm:p-5">
       <div className="flex items-center gap-3">
-        {/* kind tile */}
-        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${kindStyle.tile}`}>
+        {onToggleSelect && (
+          <input type="checkbox" checked={!!selected} onChange={() => onToggleSelect(item.id)} className="h-4 w-4 shrink-0 rounded border-white/20 bg-transparent accent-[#69dfcb]" aria-label="Select file" />
+        )}
+        {/* kind tile — also drag handle */}
+        <div className={`flex h-11 w-11 shrink-0 cursor-grab items-center justify-center rounded-xl border active:cursor-grabbing ${kindStyle.tile}`} title="Drag to reorder">
           {kindStyle.icon}
         </div>
 
@@ -155,29 +167,64 @@ export default function FileCard({ item, index, total, disabled, onRemove, onTar
         )}
 
         {item.status === "idle" && item.target === "ascii" && (
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-300">
-            <AsciiIcon className="h-3.5 w-3.5" /> Photo → text art (.txt), opens in any editor
-          </span>
+          <div className="flex w-full flex-col gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-300">
+              <AsciiIcon className="h-3.5 w-3.5" /> Photo → text art (.txt), opens in any editor
+            </span>
+            <AsciiColorPicker
+              value={(item as any).color ?? null}
+              onChange={(c) => onColorChange(item.id, c)}
+            />
+          </div>
         )}
 
         {item.status === "idle" && item.target !== "removebg" && item.target !== "ascii" && (
           <span className="text-xs text-slate-500">Ready to convert</span>
         )}
 
-        {item.status === "queued" && (
-          <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
-            <SpinnerIcon className="h-3.5 w-3.5" /> Waiting in queue…
-          </span>
+        {/* Image tools — only for image kind, idle state */}
+        {item.status === "idle" && item.kind === "image" && !["removebg","ascii"].includes(item.target) && onImageOptions && (
+          <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] p-2">
+            <span className="text-[11px] font-semibold text-slate-400">Resize:</span>
+            <input type="number" placeholder="W" value={item.imageOptions?.width ?? ""} onChange={(e) => { const v = e.target.value ? parseInt(e.target.value,10) : undefined; onImageOptions(item.id, { width: v }); }} className="w-16 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-xs text-slate-200 placeholder:text-slate-600" min={1} max={10000} />
+            <span className="text-xs text-slate-600">×</span>
+            <input type="number" placeholder="H" value={item.imageOptions?.height ?? ""} onChange={(e) => { const v = e.target.value ? parseInt(e.target.value,10) : undefined; onImageOptions(item.id, { height: v }); }} className="w-16 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-xs text-slate-200 placeholder:text-slate-600" min={1} max={10000} />
+            <select value={String(item.imageOptions?.rotate ?? 0)} onChange={(e) => onImageOptions(item.id, { rotate: parseInt(e.target.value,10) })} className="select-dark rounded border border-white/10 px-2 py-1 text-xs text-slate-200">
+              <option value="0">0°</option>
+              <option value="90">90°</option>
+              <option value="180">180°</option>
+              <option value="270">270°</option>
+            </select>
+            {(item.imageOptions?.width || item.imageOptions?.height || (item.imageOptions?.rotate && item.imageOptions.rotate !== 0)) && onClearImageOptions && (
+              <button type="button" onClick={() => onClearImageOptions(item.id)} className="rounded bg-white/5 px-2 py-1 text-[11px] text-slate-400 hover:text-slate-200">Clear</button>
+            )}
+          </div>
         )}
 
         {item.status === "running" && (
-          <div className="flex w-full flex-col gap-1.5">
-            <div className="progress-track h-2 w-full">
-              <div className="progress-fill" style={{ width: `${Math.max(4, item.percent)}%` }} />
+          <div className="flex w-full items-center gap-2">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <div className="progress-track h-2 w-full">
+                <div className="progress-fill" style={{ width: `${Math.max(4, item.percent)}%` }} />
+              </div>
+              <span className="text-[11px] text-slate-400">
+                {item.stage ?? "Converting…"} · {item.percent}%
+              </span>
             </div>
-            <span className="text-[11px] text-slate-400">
-              {item.stage ?? "Converting…"} · {item.percent}%
+            {onCancel && (
+              <button type="button" onClick={() => onCancel(item.id)} className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:border-rose-400/40 hover:text-rose-300">Cancel</button>
+            )}
+          </div>
+        )}
+
+        {item.status === "queued" && (
+          <div className="flex w-full items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+              <SpinnerIcon className="h-3.5 w-3.5" /> Waiting in queue…
             </span>
+            {onCancel && (
+              <button type="button" onClick={() => onCancel(item.id)} className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-400 hover:text-slate-200">Cancel</button>
+            )}
           </div>
         )}
 
@@ -189,29 +236,39 @@ export default function FileCard({ item, index, total, disabled, onRemove, onTar
                 <span className="text-slate-500">· {item.outputs.length} file{item.outputs.length > 1 ? "s" : ""}</span>
               ) : null}
             </span>
-            {item.outputs?.[0] && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => onReveal(item.outputs![0])}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 transition hover:border-cyan-400/40 hover:text-cyan-300"
+                onClick={() => onView(item.id)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/[0.08] px-2.5 py-1.5 text-[11px] font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-400/[0.15]"
               >
-                <ExternalIcon className="h-3.5 w-3.5" /> Open folder
+                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                View
               </button>
-            )}
+              {item.outputs?.[0] && (
+                <button
+                  type="button"
+                  onClick={() => onReveal(item.outputs![0])}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 transition hover:border-cyan-400/40 hover:text-cyan-300"
+                >
+                  <ExternalIcon className="h-3.5 w-3.5" /> Open folder
+                </button>
+              )}
+            </div>
           </div>
         )}
 
         {item.status === "error" && (
           <div className="flex w-full items-center gap-2 text-xs text-rose-300">
             <AlertIcon className="h-4 w-4 shrink-0" />
-            <span className="min-w-0 truncate" title={item.error}>
+            <span className="min-w-0 flex-1 truncate" title={item.error}>
               {item.error ?? "Conversion failed"}
             </span>
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onTargetChange(item.id, item.target)}
-              className="ml-auto shrink-0 rounded-lg border border-rose-300/20 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:border-rose-300/45 hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => onRetry(item.id)}
+              className="ml-auto shrink-0 rounded-lg border border-rose-300/30 bg-rose-400/10 px-3 py-1 text-[11px] font-semibold text-rose-200 transition hover:border-rose-300/45 hover:bg-rose-400/15 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Retry
             </button>
